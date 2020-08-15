@@ -57,7 +57,6 @@ I_nc = noncrit
 # Obtain indices that are both noncritical and not in equilibrium.
 I_necr = intersect(noncrit, nonequil)
 
-
 # The explicit and implicit tau candidates. In this case, both tau values should
 # be the same, and the explicit method is chosen.
 tau_ex = TauSelection(X0, Hazard, StoichMatrix, I_nc, epsilon, RelEpsilon)
@@ -102,7 +101,7 @@ time and species population trajectories. More details in 'src/adaptivetau.jl'.
 
 # Initialize time interval.
 t_init = 0.0
-t_final = 50.0
+t_final = 10.0
 
 # Simulate the Lotka-Volterra model.
 t_path, X_path = AdaptiveTau(c, X0, HazardFun, HazardXFuns, StoichMatrix,
