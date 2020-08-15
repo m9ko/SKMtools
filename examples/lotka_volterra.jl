@@ -32,6 +32,7 @@ R3 = Reaction([2], [])
 StoichMatrix, HazardFun, HazardXFuns, RelEpsilon = KineticModelFun(2, R1, R2, R3)
 # Reversible reactions.
 ReactPairs = ReactionPairsFun(R1, R2, R3) # empty tuple, as no reaction is reversible.
+nspecies, nreacts = size(StoichMatrix)
 
 # Initialize parameter and initial population.
 c = [0.5, 0.0025, 0.3]
@@ -120,3 +121,38 @@ t_path_gill, X_path_gill = Gillespie(c, X0, HazardFun, StoichMatrix, t_init, t_f
 plot(t_path_gill, X_path_gill[1,:], xaxis = "Time", yaxis = "Population",
      title = "Lotka-Volterra using Gillespie algorithm", label = "Prey")
 plot!(t_path_gill, X_path_gill[2,:], label = "Predator")
+
+# Make the simulated dataset to have an equal step size of delta_t, until end
+# of the dataset or specified cutoff.
+function DiscretizePath(t_path, X_path, delta_t, cutoff)
+    t_orig = Int64(floor((t_path[end] - t_path[1]) / delta_t) + 1)
+    t_cutoff = Int64(floor((cutoff - t_path[1]) / delta_t) + 1)
+
+    t_len = min(t_orig, t_cutoff)
+
+    t_path_disc = zeros(t_len)
+    X_path_disc = zeros((size(X_path)[1],t_len))
+
+    t_curr = copy(t_path[1])
+
+    t_path_disc[1] = copy(t_path[1])
+    X_path_disc[:,1] = copy(X_path[:,1])
+
+    for i in 2:t_len
+        t_curr += delta_t
+        t_index = findmin(abs.(t_path .- t_curr))[2]
+        if t_curr == t_path[t_index]
+            X_path_disc[:,i] = X_path[:,i]
+        elseif t_index == length(t_path)
+            X_path_disc[:,i] = X_path[:,end]
+        elseif t_curr < t_path[t_index]
+            t_ratio = (t_curr - t_path[t_index-1]) / (t_path[t_index] - t_path[t_index-1])
+            X_path_disc[:,i] = X_path[:,t_index-1] * (1-t_ratio) + X_path[:,t_index] * t_ratio
+        else
+            t_ratio = (t_curr - t_path[t_index]) / (t_path[t_index+1] - t_path[t_index])
+            X_path_disc[:,i] = X_path[:,t_index] * (1-t_ratio) + X_path[:,t_index+1] * t_ratio
+        end
+        t_path_disc[i] = t_curr
+    end
+    return(t_path_disc,round.(X_path_disc))
+end
