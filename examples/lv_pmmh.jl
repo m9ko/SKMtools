@@ -98,10 +98,3 @@ le_array[1] = sample(PFmodel(exp.(c_array[:,1]), Y_LV, t_LV, 1.0, nspecies, nrea
     end
 	println(i)
 end
-
-@save "successful.jld2" le_array, c_array
-plot(le_array, )
-plot(exp.(c_array[3,:]))
-
-density(exp.(c_array[1,:]))
-plot!([0.5], seriestype="vline")
