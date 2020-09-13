@@ -3,6 +3,7 @@
 """
 Please run the lotka_volterra.jl script before continuing!
 """
+using Turing
 
 # Initialize parameters and initial state of the Lotka-Volterra model.
 c = [0.5, 0.0025, 0.3]
@@ -44,7 +45,6 @@ The rest of the inputs are the inputs for the adaptive tau-leaping algorithm.
 	X_track = tzeros(size(Y))
 	X_track[:,1] ~ MvNormal(X_curr, 0.0)
 
-
 	for i in 2:size(Y)[2]
 		# Run the adaptive tau-leaping algorithm.
 		t_path, X_path = AdaptiveTau(c, X_track[:,i-1], HazardFun, HazardXFuns,
@@ -68,7 +68,7 @@ le_array = zeros(iter) # log evidence storage.
 sig_array = ones(iter) * 0.5
 
 # Draw the prior log(c) ~ Uniform(-7, 2).
-c_array[:,1] = rand(Uniform(-7,2), 3)
+c_array[:,1] = rand(Uniform(-7,0), 3)
 # The log evidence of the parameter drawn from the prior.
 le_array[1] = sample(PFmodel(exp.(c_array[:,1]), Y_LV, t_LV, 1.0, nspecies, nreacts,
 							 HazardFun, StoichMatrix, ReactPairs, RelEpsilon,
@@ -98,3 +98,78 @@ le_array[1] = sample(PFmodel(exp.(c_array[:,1]), Y_LV, t_LV, 1.0, nspecies, nrea
     end
 	println(i)
 end
+
+
+# Scribbles
+
+mean(exp.(c_array[2,1:end]))
+
+histogram(exp.(c_array[2,1:end]))
+
+sig_array
+exp.(c_array)
+plot(exp.(c_array[2,:]))
+cumsum(exp.(c_array[2,1:end])) ./ range(1,500,step=1)
+
+
+cumsum([1,2,3,4]) ./ range(1,4,step=1)
+
+
+@model function PGmodel(Y, t, sig_y, nspecies, nreacts, HazardFun,
+						StoichMatrix, ReactPairs, RelEpsilon, n_crit,
+						N_stiff, H_mult, epsilon, delta)
+
+	# Take the first observation as a starting point.
+	for i in 1:nreacts
+		c[i] ~ Uniform(-7,2)
+	end
+    X_curr ~ MvNormal(Y[:,1], sig_y)
+
+	X_track = tzeros(size(Y))
+	X_track[:,1] = X_curr
+
+	for i in 2:size(Y)[2]
+		# Run the adaptive tau-leaping algorithm.
+		t_path, X_path = AdaptiveTau(exp.(c), X_track[:,i-1], HazardFun, HazardXFuns,
+									 StoichMatrix, ReactPairs, RelEpsilon, n_crit,
+									 N_stiff, H_mult, epsilon, delta, t[i-1], t[i])
+		# This does no effect on the marignal log likelihood, as we are using the bootstrap filter.
+		X_track[:,i] = X_path[:,end-1]
+		Y[:,i] ~ MvNormal(X_path[:,end-1], sig_y)
+	end
+end
+
+@model function Gibbsmodel(Y, t, sig_y, nspecies, nreacts, HazardFun,
+						StoichMatrix, ReactPairs, RelEpsilon, n_crit,
+						N_stiff, H_mult, epsilon, delta)
+
+	# Take the first observation as a starting point.
+	for i in 1:nreacts
+		c[i] ~ Uniform(-7,2)
+	end
+    X_curr ~ MvNormal(Y[:,1], sig_y)
+
+	X_track = tzeros(size(Y))
+	X_track[:,1] ~ MvNormal(X_curr, 0.0)
+
+	for i in 2:size(Y)[2]
+		# Run the adaptive tau-leaping algorithm.
+		t_path, X_path = AdaptiveTau(exp.(c), X_track[:,i-1], HazardFun, HazardXFuns,
+									 StoichMatrix, ReactPairs, RelEpsilon, n_crit,
+									 N_stiff, H_mult, epsilon, delta, t[i-1], t[i])
+		# This does no effect on the marignal log likelihood, as we are using the bootstrap filter.
+		X_track[:,i] ~ MvNormal(X_path[:,end-1], 0.0)
+		Y[:,i] ~ MvNormal(X_path[:,end-1], sig_y)
+	end
+end
+
+
+test = sample(PGmodel(Y_LV, t_LV, 1.0, nspecies, nreacts,
+							 HazardFun, StoichMatrix, ReactPairs, RelEpsilon,
+							 n_crit, N_stiff, H_mult, epsilon, delta),
+				     PG(nParts), iter)
+
+
+exp.([-0.726541, -5.32569, -0.631903])
+
+test.value
