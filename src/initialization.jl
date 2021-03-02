@@ -129,7 +129,7 @@ function KineticModelFun(
 		elseif HOR[i] == 2.5
 			g = x -> 2.0 + 1.0/(x - 1.0)
 		else
-			g = x -> 0.0
+			g = x -> Inf
 		end
 		gFuns[i] = g
 	end
