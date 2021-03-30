@@ -16,7 +16,7 @@ Tested with simple drift-diffusion model:
 	(100, 40, 50, 1000): ~ 1 hour
 """
 
-@model SDEEuler(Xt, dt, ninter, npar, mu, sigma) = begin
+@model SDEEuler(Xt, dt, ninter, npar, mu, sigma, is_valid_data) = begin
     # Memory allocation
     nobs = length(Xt)
     theta = Vector{Real}(undef, npar)
@@ -29,17 +29,76 @@ Tested with simple drift-diffusion model:
     for i in 2:nobs
         # Latent variables
         if ninter > 0
-            Xlat[i-1, 1] ~ Normal(Xt[i-1] + mu(Xt[i-1], theta)*dtl,
-                                  sigma(Xt[i-1], theta)*sqrt(dtl))
-            for j in 2:ninter
-                Xlat[i-1,j] ~ Normal(Xlat[i-1,j-1] + mu(Xlat[i-1,j-1], theta)*dtl,
-                                     sigma(Xlat[i-1,j-1], theta)*sqrt(dtl))
+            for j in 1:ninter
+                if j == 1
+                    Xlat[i-1, 1] ~ Normal(Xt[i-1] + mu(Xt[i-1], theta)*dtl,
+                                          sigma(Xt[i-1], theta)*sqrt(dtl))
+                else
+                    Xlat[i-1,j] ~ Normal(Xlat[i-1,j-1] + mu(Xlat[i-1,j-1], theta)*dtl,
+                                         sigma(Xlat[i-1,j-1], theta)*sqrt(dtl))
+                end
+                if !is_valid_data(Xlat[i-1,j], theta)
+                    # invalid proposal
+                    Turing.@addlogprob! -Inf
+                end
             end
         end
 
         # observed variables
         Xt[i] ~ Normal(Xlat[i-1,ninter] + mu(Xlat[i-1,ninter], theta)*dtl,
                                  sigma(Xlat[i-1,ninter], theta)*sqrt(dtl))
+    end
+end
+
+
+@model SDEEulerBridge(Y, dt, nsub, npar, sigma_Y, drift, diff) = begin
+    # Memory allocation
+    nobs = length(Y)
+    theta = Vector{Real}(undef, npar)
+    Xt = Vector{Real}(undef, nobs*nsub) # nsub: number of subdivisions
+    dtl = dt/nsub
+
+
+
+    # Prior distribution (multivariate normal for now)
+    theta ~ MvNormal(zeros(npar), 5)
+    Xt[1] ~ MvNormal(Y, sigma_Y)
+
+    for i in 2:nobs
+        # Latent variables
+        # if ninter > 0
+        #     Xt[i-1, 1] ~ Normal(Xt[i-1] + mu(Xt[i-1], theta)*dtl,
+        #                           sigma(Xt[i-1], theta)*sqrt(dtl))
+        #     for j in 2:ninter
+        #         Xt[i-1,j] ~ Normal(Xt[i-1,j-1] + mu(Xt[i-1,j-1], theta)*dtl,
+        #                              sigma(Xt[i-1,j-1], theta)*sqrt(dtl))
+        #     end
+        # end
+
+        # for log-posterior adjustment
+        logp_X_path = 0.0
+        logp_X_path_aux = 0.0
+
+        # Latent variables: assume ninter > 0
+        for j in 2:nsub
+            mu_j, Sig_j, mu_aux_j, Sig_aux_j = EulerBridgeParams(Xt[(i-1) * nsub + j - 1], # the previous latent SDE
+                                                                 dt, # time between start and finish
+                                                                 dtl * (j-1), # current time relative to start
+                                                                 Y[i],
+                                                                 drift,
+                                                                 diff)
+            Xt[(i-1) * nsub + j] ~ MvNormal(mu_aux_j, Sig_aux_j)
+
+	    # Add log pdf incrementally.
+	    logp_X_path += logpdf(MvNormal(mu_j, Sig_j), Xt[(i-1) * nsub + j]) # log p(X(t+1) | X(t), θ)
+	    logp_X_path_aux += logpdf(MvNormal(mu_aux_j, Sig_aux_j), Xt[(i-1) * nsub + j]) # log p(X(t+1) | X(t), Y(t+1), θ)
+        end
+
+        # correct the log-posterior
+        Turing.@addlogprob! logp_X_path - logp_X_path_aux
+
+        # observed variables
+        Y[i] ~ Normal(Xt[(i-1) * nsub + 1), sigma_Y)
     end
 end
 
