@@ -3,22 +3,15 @@ using StatsPlots
 using Distributions
 using LinearAlgebra
 
-"""
-Lotka-Volterra particle filter using Euler approximation. The model itself can be
-readily used for a general multivariate SDE, with modification of the prior distribution.
-"""
-
-@model LotkaVolterra(Xt, dt, ninter, npar, mu, sigma) = begin
+@model Euler_SDE(Xt, dt, ninter, npar, mu, sigma) = begin
     # Memory allocation
 	nagent, nobs = size(Xt)
     theta = Vector{Real}(undef, npar)
     Xlat = Array{Real}(undef, (nagent, nobs-1, ninter))
     dtl = dt/(ninter+1)
 
-    # Prior distribution of log theta (this is VERY specific, to avoid non semidefinite matrix)
-	theta[1] ~ Uniform(0.2,0.8)
-	theta[2] ~ Uniform(0.001, 0.010)
-	theta[3] ~ Uniform(0.1,0.5)
+    # Prior distribution of theta (variance of 5 is completely arbitrary)
+	theta ~ MvNormal(zeros(npar), 5)
 
     for i in 2:nobs
         # Latent variables
@@ -28,15 +21,23 @@ readily used for a general multivariate SDE, with modification of the prior dist
 
 			# If parameters are valid, sample from the Multivariate normal
 			if is_valid(μ, Σ, nagent)
-				Xlat[:,i-1, 1] ~ MvNormal(μ,Σ)
+				Xlat[:,i-1, 1] ~ MvNormal(μ, Σ)
 			else
 				Turing.@addlogprob! -Inf
 				return
 			end
 
             for j in 2:ninter
-                Xlat[:,i-1,j] ~ MvNormal(Xlat[:,i-1,j-1] + mu(Xlat[:,i-1,j-1], theta)*dtl,
-                                     	 sigma(Xlat[:,i-1,j-1], theta)*dtl)
+
+				μ = Xlat[:,i-1,j-1] + mu(Xlat[:,i-1,j-1], theta)*dtl
+				Σ = sigma(Xlat[:,i-1,j-1], theta)*dtl
+
+				if is_valid(μ, Σ, nagent)
+					Xlat[:,i-1,j] ~ MvNormal(μ, Σ)
+                else
+					Turing.@addlogprob! -Inf
+					return
+				end
             end
         end
 
