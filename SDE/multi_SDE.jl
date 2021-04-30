@@ -1,7 +1,8 @@
 using Turing
-using StatsPlots
 using Distributions
 using LinearAlgebra
+using StatsPlots
+using Random
 
 @model Euler_SDE(Xt, dt, ninter, npar, mu, sigma) = begin
     # Memory allocation
@@ -11,39 +12,30 @@ using LinearAlgebra
     dtl = dt/(ninter+1)
 
     # Prior distribution of theta (variance of 5 is completely arbitrary)
-	theta ~ MvNormal(zeros(npar), 5)
+	#theta ~ MvNormal(zeros(npar), 5)
+	theta[1] ~ Uniform(0.2,0.9)
+	theta[2] ~ Uniform(0.001, 0.030)
+	theta[3] ~ Uniform(0.1,0.6)
 
     for i in 2:nobs
         # Latent variables
         if ninter > 0
 			μ = Xt[:,i-1] + mu(Xt[:,i-1], theta)*dtl
 			Σ = sigma(Xt[:,i-1], theta)*dtl
-
-			# If parameters are valid, sample from the Multivariate normal
-			if is_valid(μ, Σ, nagent)
-				Xlat[:,i-1, 1] ~ MvNormal(μ, Σ)
-			else
-				Turing.@addlogprob! -Inf
-				return
-			end
+			Xlat[:,i-1, 1] ~ CustomMvN(μ, Σ)
 
             for j in 2:ninter
 
 				μ = Xlat[:,i-1,j-1] + mu(Xlat[:,i-1,j-1], theta)*dtl
 				Σ = sigma(Xlat[:,i-1,j-1], theta)*dtl
+				Xlat[:,i-1,j] ~ CustomMvN(μ, Σ)
 
-				if is_valid(μ, Σ, nagent)
-					Xlat[:,i-1,j] ~ MvNormal(μ, Σ)
-                else
-					Turing.@addlogprob! -Inf
-					return
-				end
             end
         end
 
         # observed variables
-        Xt[:,i] ~ MvNormal(Xlat[:,i-1,ninter] + mu(Xlat[:,i-1,ninter], theta)*dtl,
-                           sigma(Xlat[:,i-1,ninter], theta)*dtl)
+		Xt[:,i] ~ CustomMvN(Xlat[:,i-1,ninter] + mu(Xlat[:,i-1,ninter], theta)*dtl,
+						sigma(Xlat[:,i-1,ninter], theta)*dtl)
     end
 end
 
@@ -59,9 +51,16 @@ function sigma(X, theta)
 	[[theta[1]*X[1] + theta[2]*X[1]*X[2], - theta[2]*X[1]*X[2]] [- theta[2]*X[1]*X[2], theta[2]*X[1]*X[2] + theta[3]*X[2]]]
 end
 
-function is_valid(μ, Σ, nagent)
-	return (sum(μ .>= 0) == nagent) & isposdef(Σ)
+struct CustomMvN <: ContinuousMultivariateDistribution
+	μ::Array
+	Σ::Array
+
 end
+
+Distributions.length(d::CustomMvN) = length(d.μ)
+Distributions._rand!(rng::Random._GLOBAL_RNG, d::CustomMvN, x::Array{Float64,1}) = isposdef(d.Σ) ? x = rand(MvNormal(d.μ, d.Σ)) : x = zero(x)
+Distributions._logpdf(d::CustomMvN, x::Array{Float64,1}) = isposdef(d.Σ) ? logpdf(MvNormal(d.μ, d.Σ), x) : -Inf
+
 
 """
 Testing!
@@ -74,33 +73,30 @@ Some of the functions are required from other files:
 With 11 observations, 4 subintervals, 50 particles and 1000 iterations,
 PG() completes sampling after 1.5 ~ 2 minutes.
 """
+
+
 c = [0.5, 0.0025, 0.3]
 X0 = [100.0, 100.0]
 
 t_path, X_path = Gillespie(c,X0,HazardFun,StoichMatrix,0.0,20.0)
 t, Xt = DiscretizePath(t_path,X_path,1,20)
+plot(t, Xt[1,:])
 
 dt = 1
 ninter = 4
 npar = 3
 npart = 50
-iter = 1000
+iter = 500
 
-chn = sample(LotkaVolterra(Xt, dt, ninter, npar, mu, sigma), PG(npart), iter)
+chn = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma), PG(npart), iter)
 
-chn_compGibbs2 = sample(LotkaVolterra(Xt, dt, ninter, npar, mu, sigma),
+chn_compGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
 					   Gibbs(HMC(0.001, 10, :theta), PG(npart, :Xlat)), 500)
-chn_NutsGibbs = sample(LotkaVolterra(Xt, dt, ninter, npar, mu, sigma),
+chn_NutsGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
 					   Gibbs(NUTS(1000, 0.65, :theta), PG(npart, :Xlat)), 500)
 
 estims = Array(chn)
-estims_compGibbs = Array(chn_compGibbs)
-estims_compGibbs2 = Array(chn_compGibbs2)
 
-plot(estims_compGibbs2[:,161])
-hline!([0.5])
-density(estims_compGibbs2[200:end,161])
-vline!([0.5])
-
-plot(1:40, estims[1000,1:2:80])
-plot!(1:4:41, Xt[1,:])
+plot(estims[:,end-2])
+plot!(estims[:,end-1])
+plot!(estims[:,end])
