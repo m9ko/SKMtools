@@ -4,7 +4,7 @@ using LinearAlgebra
 using StatsPlots
 using Random
 
-@model Euler_SDE(Xt, dt, ninter, npar, mu, sigma) = begin
+@model Euler_SDE(Xt, dt, ninter, npar, mu, sigma, hyper) = begin
     # Memory allocation
 	nagent, nobs = size(Xt)
     theta = tzeros(Float64, npar)
@@ -41,6 +41,53 @@ using Random
     end
 end
 
+μ = [1,2]
+Σ = [[2,0.5] [0.5,3]]
+X = rand(MvLogNormal(MvNormal(μ,Σ)),1000)
+
+var(log.(X[1,:]))
+mean(log.(X[1,:]))
+
+ϵ=1e-7
+
+@model Euler_Ito(Xt, dt, ninter, npar, mu, sigma) = begin
+    # Memory allocation
+	nagent, nobs = size(Xt)
+    theta = tzeros(Float64, npar)
+    Xlat = Array{Real}(undef, (nagent, nobs-1, ninter))
+    dtl = dt/(ninter+1)
+
+    # Prior distribution of theta (variance is completely arbitrary)
+	# theta ~ MvNormal(zeros(npar), 5)
+
+	# Specific to Lotka-Volterra
+	theta[1] ~ Uniform(0.1,1)
+	theta[2] ~ Uniform(0.001, 0.05)
+	theta[3] ~ Uniform(0.1,1)
+
+    for i in 2:nobs
+        # Latent variables
+        if ninter > 0
+			μ = log.(Xt[:,i-1] .+ ϵ) + mu_Ito(Xt[:,i-1] .+ ϵ, theta)*dtl
+			Σ = sigma_Ito(Xt[:,i-1] .+ ϵ, theta)*dtl
+			Xlat[:,i-1, 1] ~ MvLogNormal(μ, Σ)
+
+            for j in 2:ninter
+
+				μ = log.(Xlat[:,i-1,j-1] .+ ϵ) + mu_Ito(Xlat[:,i-1,j-1] .+ ϵ, theta)*dtl
+				Σ = sigma_Ito(Xlat[:,i-1,j-1] .+ ϵ, theta)*dtl
+				Xlat[:,i-1,j] ~ MvLogNormal(μ, Σ)
+
+            end
+        end
+
+        # observed variables
+		Xt[:,i] ~ MvLogNormal(log.(Xlat[:,i-1,ninter] .+ ϵ) + mu_Ito(Xlat[:,i-1,ninter] .+ ϵ, theta)*dtl,
+						sigma_Ito(Xlat[:,i-1,ninter] .+ ϵ, theta)*dtl)
+    end
+end
+
+
 """
 Drift and diffusion of Lotka-Volterra, given in Golightly & Wilkinson (2010).
 """
@@ -52,6 +99,26 @@ end
 function sigma(X, theta)
 	[[theta[1]*X[1] + theta[2]*X[1]*X[2], - theta[2]*X[1]*X[2]] [- theta[2]*X[1]*X[2], theta[2]*X[1]*X[2] + theta[3]*X[2]]]
 end
+
+function mu_Ito(X, theta)
+	mu1 = theta[1]*X[1] - theta[2]*X[1]*X[2]
+	mu2 = theta[2]*X[1]*X[2] - theta[3]*X[2]
+
+	Sig11 = theta[1]*X[1] + theta[2]*X[1]*X[2]
+	Sig22 = theta[2]*X[1]*X[2] + theta[3]*X[2]
+
+	[(mu1/X[1]) - 0.5*Sig11/(X[1])^2, (mu2/X[2]) - 0.5*Sig22/(X[2])^2]
+end
+
+function sigma_Ito(X, theta)
+	Sig11 = theta[1]*X[1] + theta[2]*X[1]*X[2]
+	Sig12 = (- theta[2]*X[1]*X[2])
+	Sig22 = theta[2]*X[1]*X[2] + theta[3]*X[2]
+
+	[[Sig11/(X[1])^2, Sig12/(X[1]*X[2])] [Sig12/(X[1]*X[2]), Sig22/(X[2])^2]]
+end
+
+isposdef(sigma_Ito([0.,40.], [0.3,0.2,0.1]))
 
 
 # Custom Multivariate Normal to deal with negative values and nonposdef matrices
@@ -82,6 +149,7 @@ X0 = [100.0, 100.0]
 
 t_path, X_path = Gillespie(c,X0,HazardFun,StoichMatrix,0.0,20.0)
 t, Xt = DiscretizePath(t_path,X_path,1,20)
+plot(t, Xt[2,:])
 
 dt = 1
 ninter = 4
@@ -91,12 +159,15 @@ iter = 500
 
 chn = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma), PG(npart), iter)
 
-chn_compGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
-					   Gibbs(HMC(0.001, 10, :theta), PG(npart, :Xlat)), 500)
-chn_NutsGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
-					   Gibbs(NUTS(1000, 0.65, :theta), PG(npart, :Xlat)), 500)
+chn_Ito = sample(Euler_Ito(Xt, dt, ninter, npar, mu_Ito, sigma_Ito), PG(npart), iter)
 
-estims = Array(chn)
+Array(chn_Ito)
+chn_compGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
+					   Gibbs(HMC(0.001, 10, :theta), PG(npart, :Xlat)), iter)
+chn_NutsGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
+					   Gibbs(NUTS(1000, 0.65, :theta), PG(npart, :Xlat)), iter)
+
+estims = Array(chn_Ito)
 
 estims[500,:]
 
