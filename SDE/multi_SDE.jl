@@ -4,7 +4,81 @@ using LinearAlgebra
 using StatsPlots
 using Random
 
-@model Euler_SDE(Xt, dt, ninter, npar, mu, sigma, hyper) = begin
+
+"""
+'User-friendlier' Euler SDE model. No nested loop, clear assume/observe statements.
+
+Next tasks:
+ - rejection sampler (data validator?)
+ - bridge filter (just manipulate the logpdf)
+"""
+
+@model Euler_SDE(Yt, dt, ninter, npar, mu, sigma) = begin
+	nagent, nobs = size(Yt)
+	theta = tzeros(Float64, npar)
+	Xt = Array{Real}(undef, (nagent, nobs-1))
+	dtl = dt/(ninter+1)
+
+	# Specific prior, only for testing purposes...
+	theta[1] ~ Uniform(0.2,0.6)
+	theta[2] ~ Uniform(0.002, 0.003)
+	theta[3] ~ Uniform(0.1,0.5)
+
+	for i in 2:nobs
+		Xt[:,i-1] ~ SDE_Dist(Yt[:,i-1], mu, sigma, nagent, ninter, theta, dtl)
+		Yt[:,i] ~ SDE_Dist(Xt[:,i-1], mu, sigma, nagent, ninter, theta, dtl)
+	end
+end
+
+chn = sample(Euler_SDE(Yt, dt, ninter, npar, mu, sigma), PG(npart), 300)
+Array(chn)
+
+# Custom Multivariate Normal to deal with negative values and nonposdef matrices
+struct SDE_Dist <: ContinuousMultivariateDistribution
+	X_last::Array
+	mu::Function
+	sigma::Function
+	nagent::Int
+	ninter::Int
+	theta::Array
+	dtl::Float64
+end
+
+# Components required for sampling
+Distributions.length(d::SDE_Dist) = d.nagent
+Distributions._rand!(rng::Random._GLOBAL_RNG, d::SDE_Dist, x::Array) = (x=SDE_Dist_sample(d.X_last, d.mu, d.sigma, d.nagent, d.ninter, d.theta, d.dtl))
+Distributions._logpdf(d::SDE_Dist, x::Array) = logpdf(MvNormal(d.X_last + d.mu(d.X_last, d.theta)*d.dtl, d.sigma(d.X_last, d.theta)*d.dtl), x)
+
+
+function SDE_Dist_sample(X_last,
+						 mu,
+						 sigma,
+						 nagent,
+						 ninter,
+						 theta,
+						 dtl)
+	if ninter > 0
+		X_inter = Array{Real}(undef, (nagent, ninter))
+
+		μ = X_last + mu(X_last, theta)*dtl
+		Σ = sigma(X_last, theta)*dtl
+		X_inter[:,1] = rand(MvNormal(μ, Σ))
+
+		for i in 2:ninter
+			μ = X_inter[:,i-1] + mu(X_inter[:,i-1], theta)*dtl
+			Σ = sigma(X_inter[:,i-1], theta)*dtl
+			X_inter[:,i] = rand(MvNormal(μ, Σ))
+		end
+		return(X_inter[:,ninter])
+	end
+end
+
+
+"""
+Standard Euler SDE model with custom MvNormal distribution.
+"""
+
+@model Euler_SDE(Xt, dt, ninter, npar, mu, sigma) = begin
     # Memory allocation
 	nagent, nobs = size(Xt)
     theta = tzeros(Float64, npar)
@@ -41,14 +115,21 @@ using Random
     end
 end
 
-μ = [1,2]
-Σ = [[2,0.5] [0.5,3]]
-X = rand(MvLogNormal(MvNormal(μ,Σ)),1000)
 
-var(log.(X[1,:]))
-mean(log.(X[1,:]))
+# Custom Multivariate Normal to deal with negative values and nonposdef matrices
+struct CustomMvN <: ContinuousMultivariateDistribution
+	μ::Array
+	Σ::Array
+end
 
-ϵ=1e-7
+# Components required for sampling
+Distributions.length(d::CustomMvN) = length(d.μ)
+Distributions._rand!(rng::Random._GLOBAL_RNG, d::CustomMvN, x::Array{Float64,1}) = (sum(d.μ .> 0) == length(d.μ)) & isposdef(d.Σ) ? x = rand(MvNormal(d.μ, d.Σ)) : x = zero(x)
+Distributions._logpdf(d::CustomMvN, x::Array{Float64,1}) = (sum(d.μ .> 0) == length(d.μ)) & isposdef(d.Σ) ? logpdf(MvNormal(d.μ, d.Σ), x) : -Inf
+
+"""
+Euler SDE model with log-transformation by Ito's lemma.
+"""
 
 @model Euler_Ito(Xt, dt, ninter, npar, mu, sigma) = begin
     # Memory allocation
@@ -61,9 +142,7 @@ mean(log.(X[1,:]))
 	# theta ~ MvNormal(zeros(npar), 5)
 
 	# Specific to Lotka-Volterra
-	theta[1] ~ Uniform(0.1,1)
-	theta[2] ~ Uniform(0.001, 0.05)
-	theta[3] ~ Uniform(0.1,1)
+	theta .~ Uniform(0.001,1)
 
     for i in 2:nobs
         # Latent variables
@@ -100,6 +179,10 @@ function sigma(X, theta)
 	[[theta[1]*X[1] + theta[2]*X[1]*X[2], - theta[2]*X[1]*X[2]] [- theta[2]*X[1]*X[2], theta[2]*X[1]*X[2] + theta[3]*X[2]]]
 end
 
+"""
+Log-transformation with Ito's lemma.
+"""
+
 function mu_Ito(X, theta)
 	mu1 = theta[1]*X[1] - theta[2]*X[1]*X[2]
 	mu2 = theta[2]*X[1]*X[2] - theta[3]*X[2]
@@ -118,19 +201,7 @@ function sigma_Ito(X, theta)
 	[[Sig11/(X[1])^2, Sig12/(X[1]*X[2])] [Sig12/(X[1]*X[2]), Sig22/(X[2])^2]]
 end
 
-isposdef(sigma_Ito([0.,40.], [0.3,0.2,0.1]))
-
-
-# Custom Multivariate Normal to deal with negative values and nonposdef matrices
-struct CustomMvN <: ContinuousMultivariateDistribution
-	μ::Array
-	Σ::Array
-end
-
-# Components required for sampling
-Distributions.length(d::CustomMvN) = length(d.μ)
-Distributions._rand!(rng::Random._GLOBAL_RNG, d::CustomMvN, x::Array{Float64,1}) = (sum(d.μ .> 0) == length(d.μ)) & isposdef(d.Σ) ? x = rand(MvNormal(d.μ, d.Σ)) : x = zero(x)
-Distributions._logpdf(d::CustomMvN, x::Array{Float64,1}) = (sum(d.μ .> 0) == length(d.μ)) & isposdef(d.Σ) ? logpdf(MvNormal(d.μ, d.Σ), x) : -Inf
+ϵ=1e-7
 
 """
 Testing!
@@ -148,7 +219,7 @@ c = [0.5, 0.0025, 0.3]
 X0 = [100.0, 100.0]
 
 t_path, X_path = Gillespie(c,X0,HazardFun,StoichMatrix,0.0,20.0)
-t, Xt = DiscretizePath(t_path,X_path,1,20)
+t, Yt = DiscretizePath(t_path,X_path,1,20)
 plot(t, Xt[2,:])
 
 dt = 1
@@ -160,8 +231,9 @@ iter = 500
 chn = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma), PG(npart), iter)
 
 chn_Ito = sample(Euler_Ito(Xt, dt, ninter, npar, mu_Ito, sigma_Ito), PG(npart), iter)
+chn_Gibbs_Ito = sample(Euler_Ito(Xt, dt, ninter, npar, mu_Ito, sigma_Ito),
+					   Gibbs(HMC(0.001, 10, :theta), PG(npart, :Xlat)), iter)
 
-Array(chn_Ito)
 chn_compGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
 					   Gibbs(HMC(0.001, 10, :theta), PG(npart, :Xlat)), iter)
 chn_NutsGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
@@ -177,3 +249,6 @@ plot(estims[:,end])
 
 plot(t_path, X_path[2,:])
 plot!(range(0,t_path[end], length=length(estims[iter,1:2:end-3])), estims[iter,2:2:end-3])
+
+plot(t_path, X_path[1,:])
+plot!(range(0,t_path[end], length=length(estims[iter,1:2:end-3])), estims[iter,1:2:end-3])
