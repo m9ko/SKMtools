@@ -20,9 +20,9 @@ Next tasks:
 	dtl = dt/(ninter+1)
 
 	# Specific prior, only for testing purposes...
-	theta[1] ~ Uniform(0.2,0.6)
+	theta[1] ~ Uniform(0,0.6)
 	theta[2] ~ Uniform(0.002, 0.003)
-	theta[3] ~ Uniform(0.1,0.5)
+	theta[3] ~ Uniform(0,0.5)
 
 	for i in 2:nobs
 		Xt[:,i-1] ~ SDE_Dist(Yt[:,i-1], mu, sigma, nagent, ninter, theta, dtl)
@@ -30,10 +30,7 @@ Next tasks:
 	end
 end
 
-chn = sample(Euler_SDE(Yt, dt, ninter, npar, mu, sigma), PG(npart), 300)
-Array(chn)
-
-# Custom Multivariate Normal to deal with negative values and nonposdef matrices
+# Custom SDE Dist
 struct SDE_Dist <: ContinuousMultivariateDistribution
 	X_last::Array
 	mu::Function
@@ -49,7 +46,8 @@ Distributions.length(d::SDE_Dist) = d.nagent
 Distributions._rand!(rng::Random._GLOBAL_RNG, d::SDE_Dist, x::Array) = (x=SDE_Dist_sample(d.X_last, d.mu, d.sigma, d.nagent, d.ninter, d.theta, d.dtl))
 Distributions._logpdf(d::SDE_Dist, x::Array) = logpdf(MvNormal(d.X_last + d.mu(d.X_last, d.theta)*d.dtl, d.sigma(d.X_last, d.theta)*d.dtl), x)
 
-
+# Input: last observations and other info
+# Output: the last (ninter-th) sample
 function SDE_Dist_sample(X_last,
 						 mu,
 						 sigma,
@@ -131,7 +129,7 @@ Distributions._logpdf(d::CustomMvN, x::Array{Float64,1}) = (sum(d.μ .> 0) == le
 Euler SDE model with log-transformation by Ito's lemma.
 """
 
-@model Euler_Ito(Xt, dt, ninter, npar, mu, sigma) = begin
+@model Euler_Ito(Xt, dt, ninter, npar, mu, sigma, ϵ=1e-7) = begin
     # Memory allocation
 	nagent, nobs = size(Xt)
     theta = tzeros(Float64, npar)
@@ -169,6 +167,7 @@ end
 
 """
 Drift and diffusion of Lotka-Volterra, given in Golightly & Wilkinson (2010).
+Make this generalizable using StoichMatrix and HazardFun? (SH, SHS')
 """
 
 function mu(X, theta)
@@ -201,26 +200,30 @@ function sigma_Ito(X, theta)
 	[[Sig11/(X[1])^2, Sig12/(X[1]*X[2])] [Sig12/(X[1]*X[2]), Sig22/(X[2])^2]]
 end
 
-ϵ=1e-7
 
 """
 Testing!
 
-Some of the functions are required from other files:
-	Gillespie from src/gillespie.jl
-	DiscretizePath from examples/lotka_volterra.jl
-	HazardFun and StoichMatrix from src/initialization.jl
-
+Please run all of the prep.jl file before proceeding!
 With 11 observations, 4 subintervals, 50 particles and 1000 iterations,
 PG() completes sampling after 1.5 ~ 2 minutes.
 """
 
+
+# The set of reactions in `Reaction` structure.
+R1 = Reaction([1], [1,1])
+R2 = Reaction([1,2], [2,2])
+R3 = Reaction([2], [])
+
+# Stoichiometric matrix, hazard function (two versions) and relative epsilon function.
+StoichMatrix, HazardFun, HazardXFuns, RelEpsilon = KineticModelFun(2, R1, R2, R3)
+
 c = [0.5, 0.0025, 0.3]
 X0 = [100.0, 100.0]
 
-t_path, X_path = Gillespie(c,X0,HazardFun,StoichMatrix,0.0,20.0)
-t, Yt = DiscretizePath(t_path,X_path,1,20)
-plot(t, Xt[2,:])
+t_path, Y_path = Gillespie(c,X0,HazardFun,StoichMatrix,0.0,20.0)
+t, Yt = DiscretizePath(t_path,Y_path,1,20)
+plot(t, Yt[2,:])
 
 dt = 1
 ninter = 4
@@ -228,9 +231,17 @@ npar = 3
 npart = 50
 iter = 500
 
-chn = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma), PG(npart), iter)
+chn = sample(Euler_SDE(Yt, dt, ninter, npar, mu, sigma), PG(npart), iter)
+chn_Ito = sample(Euler_Ito(Yt, dt, ninter, npar, mu_Ito, sigma_Ito), PG(npart), iter)
 
-chn_Ito = sample(Euler_Ito(Xt, dt, ninter, npar, mu_Ito, sigma_Ito), PG(npart), iter)
+estims = Array(chn_Ito)
+
+plot(t_path, X_path[2,:])
+plot!(range(0,t_path[end], length=length(estims[iter,1:2:end-3])), estims[iter,2:2:end-3])
+
+"""
+Doesn't work yet!
+"""
 chn_Gibbs_Ito = sample(Euler_Ito(Xt, dt, ninter, npar, mu_Ito, sigma_Ito),
 					   Gibbs(HMC(0.001, 10, :theta), PG(npart, :Xlat)), iter)
 
@@ -238,17 +249,3 @@ chn_compGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
 					   Gibbs(HMC(0.001, 10, :theta), PG(npart, :Xlat)), iter)
 chn_NutsGibbs = sample(Euler_SDE(Xt, dt, ninter, npar, mu, sigma),
 					   Gibbs(NUTS(1000, 0.65, :theta), PG(npart, :Xlat)), iter)
-
-estims = Array(chn_Ito)
-
-estims[500,:]
-
-plot(estims[:,end-2])
-plot(estims[:,end-1])
-plot(estims[:,end])
-
-plot(t_path, X_path[2,:])
-plot!(range(0,t_path[end], length=length(estims[iter,1:2:end-3])), estims[iter,2:2:end-3])
-
-plot(t_path, X_path[1,:])
-plot!(range(0,t_path[end], length=length(estims[iter,1:2:end-3])), estims[iter,1:2:end-3])
